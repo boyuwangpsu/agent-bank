@@ -32,3 +32,6 @@ memory.db
 
 # Kiro
 .kiro/
+
+# Superpowers visual brainstorming scratch files
+.superpowers/

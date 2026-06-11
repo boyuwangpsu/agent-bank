@@ -110,7 +110,7 @@ agent-bank 不只是"存取记忆"。它通过 **MCP Resource** 自动向 Agent 
 
 ## 数据安全
 
-- 所有数据存储在本地 `~/.agent-bank/memory.db`
+- 所有记忆以 Markdown 文件存储在本地 `~/.agent-bank/memory/`
 - 不上传任何数据到云端
 - 不需要 API key
 - 不需要网络连接
@@ -118,7 +118,7 @@ agent-bank 不只是"存取记忆"。它通过 **MCP Resource** 自动向 Agent 
 ## 技术栈
 
 - Python 3.11+
-- SQLite（零依赖存储）
+- Markdown 文件夹（本地真源存储）
 - MCP SDK（标准协议）
 
 ## 开发

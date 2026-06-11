@@ -68,6 +68,8 @@ class Memory:
             raise ValidationError(f"source 必须是 {VALID_SOURCES} 之一")
         if not (0.0 <= self.importance <= 1.0):
             raise ValidationError("importance 必须在 0.0-1.0 之间")
+        if any(not tag or not tag.strip() for tag in self.tags):
+            raise ValidationError("tags 中不能包含空字符串")
 
     def touch(self) -> None:
         """Update access tracking (called on recall hit)."""

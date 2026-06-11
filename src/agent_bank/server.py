@@ -11,21 +11,26 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Resource, TextContent, Tool
 
-from agent_bank.config import get_db_path, detect_project
-from agent_bank.db import Database
+from agent_bank.config import (
+    detect_project,
+    get_dashboard_path,
+    get_memory_root,
+)
+from agent_bank.markdown_store import MarkdownMemoryStore
 from agent_bank.models import Memory, ValidationError, VALID_CATEGORIES, VALID_SCOPES, VALID_SOURCES
 from agent_bank.steering import generate_steering
+from agent_bank.visualize import write_dashboard
 
 server = Server("agent-bank")
 
-_db: Database | None = None
+_store: MarkdownMemoryStore | None = None
 
 
-def _get_db() -> Database:
-    global _db
-    if _db is None:
-        _db = Database(get_db_path())
-    return _db
+def _get_store() -> MarkdownMemoryStore:
+    global _store
+    if _store is None:
+        _store = MarkdownMemoryStore(get_memory_root())
+    return _store
 
 
 # ─── MCP Resources ───────────────────────────────────────────────────────────
@@ -52,8 +57,8 @@ async def list_resources() -> list[Resource]:
 async def read_resource(uri: str) -> str:
     """Return the auto-generated steering content."""
     if uri == "agent-bank://steering":
-        db = _get_db()
-        return generate_steering(db)
+        store = _get_store()
+        return generate_steering(store)
     raise ValueError(f"Unknown resource: {uri}")
 
 
@@ -199,8 +204,101 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="govern",
+            description="治理一条记忆事实：确认准确、废弃错误认知、标记过期。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "fact_id": {
+                        "type": "string",
+                        "description": "要治理的事实 ID（与 memory_id 二选一）",
+                    },
+                    "memory_id": {
+                        "type": "string",
+                        "description": "要治理的记忆 ID（与 fact_id 二选一）",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["confirm", "reject", "stale"],
+                        "description": "治理动作：confirm(确认)/reject(废弃)/stale(过期)",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "用户给出的治理原因",
+                    },
+                },
+                "required": ["action"],
+            },
+        ),
+        Tool(
+            name="merge",
+            description="把多条重复或冲突记忆合并成一条新的当前认知，旧事实保留为历史证据。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要合并的记忆 ID 列表，至少两条",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "合并后的当前认知内容",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": list(VALID_CATEGORIES),
+                        "description": "合并后记忆类型。不填则沿用第一条来源记忆。",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "合并后记忆主体。不填则沿用第一条来源记忆。",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "合并原因，会写入时间轴",
+                    },
+                },
+                "required": ["memory_ids", "content"],
+            },
+        ),
+        Tool(
+            name="merge_candidates",
+            description="推荐可能需要合并的重复记忆候选。只推荐，不自动合并。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "top_k": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "最多返回候选组数量",
+                    },
+                },
+            },
+        ),
+        Tool(
             name="stats",
             description="查看记忆统计：各类型数量、总数。",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="visualize",
+            description="生成本地记忆可视化页面：画像摘要、记忆图谱、时间轴演进。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "format": {
+                        "type": "string",
+                        "enum": ["html"],
+                        "default": "html",
+                        "description": "输出格式。当前 MVP 支持 html。",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="export_md",
+            description="把当前有效记忆导出为 Markdown 文件夹投影，便于 Kiro/Claude Code/Codex 读取。",
             inputSchema={"type": "object", "properties": {}},
         ),
     ]
@@ -216,7 +314,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         "profile": _handle_profile,
         "context": _handle_context,
         "forget": _handle_forget,
+        "govern": _handle_govern,
+        "merge": _handle_merge,
+        "merge_candidates": _handle_merge_candidates,
         "stats": _handle_stats,
+        "visualize": _handle_visualize,
+        "export_md": _handle_export_md,
     }
     handler = handlers.get(name)
     if not handler:
@@ -253,8 +356,8 @@ async def _handle_remember(args: dict) -> list[TextContent]:
     except ValidationError as e:
         return [_error(str(e))]
 
-    db = _get_db()
-    db.add(memory)
+    store = _get_store()
+    store.add(memory)
 
     return [_json({"status": "remembered", "id": memory.id, "category": category})]
 
@@ -264,7 +367,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     if not query:
         return [_error("query 不能为空")]
 
-    db = _get_db()
+    db = _get_store()
     category = args.get("category", "all")
     category_filter = None if category == "all" else category
 
@@ -303,7 +406,7 @@ async def _handle_people(args: dict) -> list[TextContent]:
     if not name:
         return [_error("name 不能为空")]
 
-    db = _get_db()
+    db = _get_store()
     memories = db.search(query=name, category="people", subject=name, top_k=50)
 
     if not memories:
@@ -315,7 +418,7 @@ async def _handle_people(args: dict) -> list[TextContent]:
 
 
 async def _handle_profile(args: dict) -> list[TextContent]:
-    db = _get_db()
+    db = _get_store()
     section = args.get("section", "all")
 
     result: dict = {}
@@ -337,7 +440,7 @@ async def _handle_profile(args: dict) -> list[TextContent]:
 
 
 async def _handle_context(args: dict) -> list[TextContent]:
-    db = _get_db()
+    db = _get_store()
     work = db.get_all(category="work")
     # Sort by most recently updated
     work.sort(key=lambda m: m.updated_at, reverse=True)
@@ -354,7 +457,7 @@ async def _handle_context(args: dict) -> list[TextContent]:
 
 
 async def _handle_forget(args: dict) -> list[TextContent]:
-    db = _get_db()
+    db = _get_store()
     memory_id = args.get("memory_id")
     query = args.get("query")
 
@@ -378,10 +481,103 @@ async def _handle_forget(args: dict) -> list[TextContent]:
     return [_error("需要提供 memory_id 或 query")]
 
 
+async def _handle_govern(args: dict) -> list[TextContent]:
+    action = args.get("action")
+    if action not in ("confirm", "reject", "stale"):
+        return [_error("action 必须是 confirm/reject/stale 之一")]
+
+    fact_id = args.get("fact_id")
+    memory_id = args.get("memory_id")
+    if not fact_id and not memory_id:
+        return [_error("需要提供 fact_id 或 memory_id")]
+
+    fact = _get_store().govern_fact(
+        fact_id=fact_id,
+        memory_id=memory_id,
+        action=action,
+        reason=args.get("reason", ""),
+    )
+    if fact is None:
+        return [_error("没有找到可治理的记忆事实")]
+
+    return [_json({"status": "governed", "action": action, "fact": fact})]
+
+
+async def _handle_merge(args: dict) -> list[TextContent]:
+    memory_ids = args.get("memory_ids")
+    content = args.get("content", "")
+    if not isinstance(memory_ids, list) or len(memory_ids) < 2:
+        return [_error("memory_ids 至少需要两条记忆 ID")]
+    if not isinstance(content, str) or not content.strip():
+        return [_error("content 不能为空")]
+
+    memory = _get_store().merge_memories(
+        memory_ids=memory_ids,
+        content=content,
+        category=args.get("category"),
+        subject=args.get("subject"),
+        reason=args.get("reason", ""),
+    )
+    if memory is None:
+        return [_error("合并失败：请检查 memory_ids 是否存在")]
+
+    return [
+        _json(
+            {
+                "status": "merged",
+                "merged_from": memory_ids,
+                "memory": memory.to_dict(),
+            }
+        )
+    ]
+
+
+async def _handle_merge_candidates(args: dict) -> list[TextContent]:
+    top_k = args.get("top_k", 20)
+    if not isinstance(top_k, int) or top_k < 1:
+        return [_error("top_k 必须是正整数")]
+
+    return [_json({"candidates": _get_store().merge_candidates(top_k=top_k)})]
+
+
 async def _handle_stats(args: dict) -> list[TextContent]:
-    db = _get_db()
+    db = _get_store()
     counts = db.count()
     return [_json({"memory_stats": counts})]
+
+
+async def _handle_visualize(args: dict) -> list[TextContent]:
+    output_format = args.get("format", "html")
+    if output_format != "html":
+        return [_error("visualize 当前只支持 html 格式")]
+
+    db = _get_store()
+    path = write_dashboard(db, get_dashboard_path())
+    return [
+        _json(
+            {
+                "status": "generated",
+                "format": "html",
+                "path": str(path),
+                "message": "已生成本地记忆可视化页面",
+            }
+        )
+    ]
+
+
+async def _handle_export_md(args: dict) -> list[TextContent]:
+    store = _get_store()
+    path = store.rebuild_map()
+    return [
+        _json(
+            {
+                "status": "rebuilt",
+                "format": "markdown",
+                "path": str(path),
+                "message": "已重建 Markdown 记忆地图",
+            }
+        )
+    ]
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

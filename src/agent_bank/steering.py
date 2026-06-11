@@ -4,11 +4,10 @@ This is the core differentiator: memories don't just get stored and retrieved,
 they actively drive Agent behavior through auto-generated rules.
 """
 
-from agent_bank.db import Database
 from agent_bank.models import Memory
 
 
-def generate_steering(db: Database) -> str:
+def generate_steering(store) -> str:
     """Generate steering text from current memories.
 
     This text is served as an MCP Resource and automatically injected
@@ -24,27 +23,27 @@ def generate_steering(db: Database) -> str:
     sections.append(_header())
 
     # Identity summary
-    identity = db.get_all(category="identity")
+    identity = store.get_all(category="identity")
     if identity:
         sections.append(_identity_section(identity))
 
     # People / leader style rules
-    people = db.get_all(category="people")
+    people = store.get_all(category="people")
     if people:
         sections.append(_people_section(people))
 
     # Work context
-    work = db.get_all(category="work")
+    work = store.get_all(category="work")
     if work:
         sections.append(_work_section(work))
 
     # Preferences
-    preferences = db.get_all(category="preference")
+    preferences = store.get_all(category="preference")
     if preferences:
         sections.append(_preference_section(preferences))
 
     # Knowledge / terminology
-    knowledge = db.get_all(category="knowledge")
+    knowledge = store.get_all(category="knowledge")
     if knowledge:
         sections.append(_knowledge_section(knowledge))
 
@@ -59,10 +58,11 @@ def _header() -> str:
 
 你连接了 agent-bank 记忆系统。请遵循以下规则：
 
-1. **执行任务前先 recall**：涉及特定人、项目、汇报时，先调用 recall 获取相关记忆
-2. **发现值得记的信息时 remember**：用户表达偏好、领导要求、工作变化时，主动调用 remember
-3. **风格对齐**：生成材料时，参考相关人的风格偏好
-4. **不要提及记忆系统本身**：除非用户主动问，否则不要说"我从记忆中找到..."，直接用记忆影响输出"""
+1. **执行任务前先读 MEMORY_MAP.md**：根据人物、项目、关键词定位相关记忆文件
+2. **只读必要 Markdown**：不要全文扫所有记忆，先看地图，再读具体文件
+3. **发现值得记的信息时 remember**：用户表达偏好、领导要求、工作变化时，主动调用 remember
+4. **风格对齐**：生成材料时，参考相关人的风格偏好
+5. **不要提及记忆系统本身**：除非用户主动问，否则不要说"我从记忆中找到..."，直接用记忆影响输出"""
 
 
 def _identity_section(memories: list[Memory]) -> str:

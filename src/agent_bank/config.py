@@ -4,18 +4,30 @@ import os
 from pathlib import Path
 
 
-def get_db_path() -> Path:
-    """Get the SQLite database path.
+def get_dashboard_path() -> Path:
+    """Get the generated dashboard path.
 
     Priority:
-    1. AGENT_BANK_DB environment variable
-    2. ~/.agent-bank/memory.db (default)
+    1. AGENT_BANK_DASHBOARD environment variable
+    2. ~/.agent-bank/dashboard.html (default)
     """
-    env_path = os.environ.get("AGENT_BANK_DB")
+    env_path = os.environ.get("AGENT_BANK_DASHBOARD")
     if env_path:
-        # Expand ~ in env var
         return Path(env_path).expanduser()
-    return Path.home() / ".agent-bank" / "memory.db"
+    return Path.home() / ".agent-bank" / "dashboard.html"
+
+
+def get_memory_root() -> Path:
+    """Get the Markdown memory root directory.
+
+    Priority:
+    1. AGENT_BANK_MEMORY_DIR environment variable
+    2. ~/.agent-bank/memory (default)
+    """
+    env_path = os.environ.get("AGENT_BANK_MEMORY_DIR")
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".agent-bank" / "memory"
 
 
 def detect_project() -> str | None:
